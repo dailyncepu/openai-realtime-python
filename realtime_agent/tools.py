@@ -22,6 +22,7 @@ class LocalFunctionToolDeclaration:
     function: Callable[..., Any]
 
     def model_description(self) -> dict[str, Any]:
+        """本地功能工具：由代理在本地上下文中直接执行。"""
         return {
             "type": "function",
             "name": self.name,
@@ -39,6 +40,7 @@ class PassThroughFunctionToolDeclaration:
     parameters: dict[str, Any]
 
     def model_description(self) -> dict[str, Any]:
+        """直通工具：将数据发送回 OpenAI 的模型，而无需在本地执行。"""
         return {
             "type": "function",
             "name": self.name,
@@ -64,6 +66,10 @@ ExecuteToolCallResult = LocalToolCallExecuted | ShouldPassThroughToolCall
 
 
 class ToolContext(abc.ABC):
+    """该类ToolContext管理所有可用的工具。
+    它提供了注册工具和在 OpenAI 模型请求时执行工具的逻辑。
+    注册工具后，代理可以响应来自 OpenAI 模型的消息来执行它们。
+    代理会监听工具调用请求，并在本地执行工具或将数据传回模型。"""
     _tool_declarations: dict[str, ToolDeclaration]
 
     def __init__(self) -> None:
@@ -78,6 +84,7 @@ class ToolContext(abc.ABC):
         parameters: dict[str, Any],
         fn: Callable[..., Any],
     ) -> None:
+        """注册本地执行工具"""
         self._tool_declarations[name] = LocalFunctionToolDeclaration(
             name=name, description=description, parameters=parameters, function=fn
         )
@@ -89,6 +96,7 @@ class ToolContext(abc.ABC):
         description: str = "",
         parameters: dict[str, Any],
     ) -> None:
+        """注册数据传回工具"""
         self._tool_declarations[name] = PassThroughFunctionToolDeclaration(
             name=name, description=description, parameters=parameters
         )
@@ -96,6 +104,7 @@ class ToolContext(abc.ABC):
     async def execute_tool(
         self, tool_name: str, encoded_function_args: str
     ) -> ExecuteToolCallResult | None:
+        """执行工具。"""
         tool = self._tool_declarations.get(tool_name)
         if not tool:
             return None
@@ -119,5 +128,6 @@ class ToolContext(abc.ABC):
 
 
 class ClientToolCallResponse(BaseModel):
+    """表示调用和处理工具后的响应。此类旨在表示客户端工具调用的响应，其中tool_call_id唯一标识工具调用，结果可以采用多种数据类型，表示该调用的输出。结果字段的灵活性允许各种各样的响应"""
     tool_call_id: str
     result: dict[str, Any] | str | float | int | bool | None = None

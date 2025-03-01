@@ -14,7 +14,7 @@ from realtime_agent.realtime.tools_example import AgentTools
 from .realtime.struct import PCM_CHANNELS, PCM_SAMPLE_RATE, ServerVADUpdateParams, Voices
 
 from .agent import InferenceConfig, RealtimeKitAgent
-from agora_realtime_ai_api.rtc import RtcEngine, RtcOptions
+from .mp_rtc import RtcEngine, RtcOptions
 from .logger import setup_logger
 from .parse_args import parse_args, parse_args_realtimekit
 
@@ -260,8 +260,10 @@ if __name__ == "__main__":
             asyncio.set_event_loop(loop)
 
         # Start the application using asyncio.run for the new event loop
+        port = os.getenv("SERVER_PORT")
+        logger.info(f"Running httpserver with prot: {port}")
         app = loop.run_until_complete(init_app())
-        web.run_app(app, port=int(os.getenv("SERVER_PORT") or "8080"))
+        web.run_app(app, port=int(port))
     elif args.action == "agent":
         # Parse RealtimeKitOptions for running the agent
         realtime_kit_options = parse_args_realtimekit()

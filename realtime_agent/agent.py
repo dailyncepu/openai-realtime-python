@@ -8,7 +8,7 @@ from typing import Any
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
 
-from agora_realtime_ai_api.rtc import Channel, ChatMessage, RtcEngine, RtcOptions
+from .mp_rtc import Channel, ChatMessage, RtcEngine, RtcOptions
 
 from .logger import setup_logger
 from .realtime.struct import ErrorMessage, FunctionCallOutputItemParam, InputAudioBufferCommitted, InputAudioBufferSpeechStarted, InputAudioBufferSpeechStopped, InputAudioTranscription, ItemCreate, ItemCreated, ItemInputAudioTranscriptionCompleted, RateLimitsUpdated, ResponseAudioDelta, ResponseAudioDone, ResponseAudioTranscriptDelta, ResponseAudioTranscriptDone, ResponseContentPartAdded, ResponseContentPartDone, ResponseCreate, ResponseCreated, ResponseDone, ResponseFunctionCallArgumentsDelta, ResponseFunctionCallArgumentsDone, ResponseOutputItemAdded, ResponseOutputItemDone, ServerVADUpdateParams, SessionUpdate, SessionUpdateParams, SessionUpdated, Voices, to_json
@@ -26,6 +26,9 @@ def _monitor_queue_size(queue: asyncio.Queue, queue_name: str, threshold: int = 
 
 
 async def wait_for_remote_user(channel: Channel) -> int:
+    """
+        函数是代理功能的关键组件。它监听远程用户加入 Agora 频道的事件。该函数将阻塞，直到用户加入或超时。
+    """
     remote_users = list(channel.remote_users.keys())
     if len(remote_users) > 0:
         return remote_users[0]
@@ -69,6 +72,7 @@ class RealtimeKitAgent:
 
     _client_tool_futures: dict[str, asyncio.Future[ClientToolCallResponse]]
 
+    # 1.连接到Agora 和 Open Realtime API
     @classmethod
     async def setup_and_run_agent(
         cls,
@@ -78,6 +82,10 @@ class RealtimeKitAgent:
         inference_config: InferenceConfig,
         tools: ToolContext | None,
     ) -> None:
+        """
+            该setup_and_run_agent方法使用 连接到 Agora 频道RtcEngine，并使用 OpenAI 的 Realtime API 设置会话。
+            它配置会话参数（例如系统消息和语音设置），并使用异步任务并发监听会话以启动和更新对话配置。
+        """
         channel = engine.create_channel(options)
         await channel.connect()
 
@@ -129,6 +137,7 @@ class RealtimeKitAgent:
             await channel.disconnect()
             await connection.close()
 
+    # 2.代理初始化
     def __init__(
         self,
         *,
@@ -136,6 +145,9 @@ class RealtimeKitAgent:
         tools: ToolContext | None,
         channel: Channel,
     ) -> None:
+        """
+        设置 OpenAI 客户端、可选工具和 Agora 频道来管理实时音频通信。
+        """
         self.connection = connection
         self.tools = tools
         self._client_tool_futures = {}
@@ -145,6 +157,12 @@ class RealtimeKitAgent:
         logger.info(f"Write PCM: {self.write_pcm}")
 
     async def run(self) -> None:
+        """方法run是 的核心RealtimeKitAgent。它通过处理音频流、订阅远程用户以及处理传入和传出消息来管理代理的操作。此方法还确保正确的异常处理和正常关闭。
+        以下是此方法的关键功能：
+            等待远程用户：代理等待远程用户加入 Agora 频道并订阅他们的音频流。
+            任务管理：代理启动音频输入、音频输出和处理来自 OpenAI 的消息的任务，确保它们同时运行。
+            连接状态处理：监视连接状态的变化并处理用户断开连接，确保代理正常关闭。
+        """
         try:
 
             def log_exception(t: asyncio.Task[Any]) -> None:
@@ -156,13 +174,14 @@ class RealtimeKitAgent:
 
             def on_stream_message(agora_local_user, user_id, stream_id, data, length) -> None:
                 logger.info(f"Received stream message with length: {length}")
-
             self.channel.on("stream_message", on_stream_message)
 
             logger.info("Waiting for remote user to join")
             self.subscribe_user = await wait_for_remote_user(self.channel)
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
+            await self.channel.subscribe_video(self.subscribe_user)
+            logger.info(f"Subscribed to audio and video from user {self.subscribe_user}")
 
             async def on_user_left(
                 agora_rtc_conn: RTCConnection, user_id: int, reason: int
@@ -172,17 +191,14 @@ class RealtimeKitAgent:
                     self.subscribe_user = None
                     logger.info("Subscribed user left, disconnecting")
                     await self.channel.disconnect()
-
             self.channel.on("user_left", on_user_left)
 
             disconnected_future = asyncio.Future[None]()
-
             def callback(agora_rtc_conn: RTCConnection, conn_info: RTCConnInfo, reason):
                 logger.info(f"Connection state changed: {conn_info.state}")
                 if conn_info.state == 1:
                     if not disconnected_future.done():
                         disconnected_future.set_result(None)
-
             self.channel.on("connection_state_changed", callback)
 
             asyncio.create_task(self.rtc_to_model()).add_done_callback(log_exception)
@@ -201,6 +217,19 @@ class RealtimeKitAgent:
             raise
 
     async def rtc_to_model(self) -> None:
+        """
+        从实时通信（RTC）通道中获取音频帧，并将其发送到模型进行处理。
+    
+        该函数会持续监听RTC通道中的音频帧，直到获取到有效的音频帧为止。然后，它会将音频帧发送到模型进行处理，
+        并可选地将音频数据写入PCM文件。
+    
+        参数:
+            无
+    
+        返回值:
+            无
+        """
+        # 等待直到
         while self.subscribe_user is None or self.channel.get_audio_frames(self.subscribe_user) is None:
             await asyncio.sleep(0.1)
 
@@ -217,7 +246,6 @@ class RealtimeKitAgent:
 
                 # Write PCM data if enabled
                 await pcm_writer.write(audio_frame.data)
-
                 await asyncio.sleep(0)  # Yield control to allow other tasks to run
 
         except asyncio.CancelledError:
@@ -226,6 +254,17 @@ class RealtimeKitAgent:
             raise  # Re-raise the exception to propagate cancellation
 
     async def model_to_rtc(self) -> None:
+        """
+        将模型生成的音频数据实时传输到RTC（实时通信）通道。
+
+        该函数从模型的音频队列中获取音频帧，并将其推送到RTC通道中。同时，如果启用了PCM写入功能，
+        还会将音频数据写入PCM文件。
+
+        参数:
+            self: 类的实例，包含音频队列、RTC通道和PCM写入器等必要组件。
+        返回值:
+            None: 该函数没有返回值。
+        """
         # Initialize PCMWriter for sending audio
         pcm_writer = PCMWriter(prefix="model_to_rtc", write_pcm=self.write_pcm)
 
@@ -261,6 +300,16 @@ class RealtimeKitAgent:
         )
 
     async def _process_model_messages(self) -> None:
+        """
+            处理模型返回的消息，包括音频增量和文本增量。
+            消息处理是RealtimeKitAgent代理与 OpenAI 模型和 Agora 频道交互的核心。
+            从模型收到的消息可以包括音频数据、文本记录或其他响应，代理需要相应地处理这些消息以【确保顺畅的实时通信】。
+            实现的主要功能:
+                监听消息：代理不断监听来自 OpenAI 模型的传入消息。
+                处理音频数据：如果消息包含音频数据，则将其放入队列中以便在 Agora 频道播放。
+                处理记录：如果消息包含部分或最终文本记录，则会对其进行处理并发送到 Agora 聊天。
+                处理其他响应：根据需要处理其他消息类型，例如工具调用和其他输出。
+        """
         async for message in self.connection.listen():
             # logger.info(f"Received message {message=}")
             match message:
@@ -285,6 +334,7 @@ class RealtimeKitAgent:
                         )
                     ))
                 case InputAudioBufferSpeechStarted():
+                    # 触发此事件时，系统会清除 Agora 频道上发送方的音频缓冲区并清空本地音频队列，以确保先前的音频不会干扰新的输入。它还会记录事件以进行跟踪，从而使代理能够有效地管理和处理传入的音频流。
                     await self.channel.clear_sender_audio_buffer()
                     # clear the audio queue so audio stops playing
                     while not self.audio_queue.empty():

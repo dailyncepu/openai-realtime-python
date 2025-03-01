@@ -7,7 +7,8 @@ import colorlog
 def setup_logger(
     name: str,
     log_level: int = logging.INFO,
-    log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    # log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    log_format: str = "%(asctime)s - %(name)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s",
     use_color: bool = True
 ) -> logging.Logger:
     """Sets up and returns a logger with color and timestamp support, including milliseconds."""
