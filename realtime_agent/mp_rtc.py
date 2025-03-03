@@ -44,6 +44,7 @@ class RtcOptions:
         enable_pcm_dump: bool = False,
         enable_vad: bool = False,
         vad_configs: any = {},
+        video_sample_rate = 1,
     ):
         self.channel_name = channel_name
         self.uid = uid
@@ -52,6 +53,7 @@ class RtcOptions:
         self.enable_pcm_dump = enable_pcm_dump
         self.enable_vad = enable_vad
         self.vad_configs = vad_configs
+        self.video_sample_rate = video_sample_rate
 
     def build_token(self, appid: str, appcert: str) -> str:
         return RealtimekitTokenBuilder.build_token(
@@ -65,26 +67,48 @@ class VideoFrameObserver(IVideoFrameObserver):
         self.emitter = event_emitter
         self.options = options
         self.video_streams = {}
+        # 帧率统计
+        self.detect_fps = 0
         self.frame_count = 0
         self.last_frame_time = 0
+        # 采样配置
+        self.sample_rate = options.video_sample_rate if hasattr(options, 'video_sample_rate') else 1 # 每个流每秒采样张数, 默认每秒采样一帧
+        self.sample_interval = 0 # 采样间隔
+        self.max_buffer_size = options.max_buffer_size if hasattr(options, 'max_buffer_size') else 30  # 每个流的最大缓冲帧数
+        self.frame_since_last_sample = 0 # 自上次采样以来经过了多少帧
 
     def on_frame(self, channel_id, remote_uid, frame: VideoFrame):
         # logger.info(f"Receive video frame from {remote_uid}: width={frame.width}, height={frame.height}")
-
         current_time = time.time()
+
+        # 帧率统计
         self.frame_count += 1
-        if current_time - self.last_frame_time >= 1:  # 每秒记录一次
+        if current_time - self.last_frame_time >= 1:
             logger.info(f"Video FPS: {self.frame_count}, Resolution: {frame.width}x{frame.height}")
+            self.detect_fps = self.frame_count
+            self.sample_interval = int(self.detect_fps / self.sample_rate) # 计算采样间隔
             self.frame_count = 0
             self.last_frame_time = current_time
 
-        # # 处理视频帧: TODO
-        # if remote_uid not in self.video_streams:
-        #     self.video_streams[remote_uid] = []
+        # 基于帧计数的均匀采样
+        self.frame_since_last_sample += 1
+        if self.frame_since_last_sample >= self.sample_interval: # 首次采样或达到采样间隔
+            # # 初始化或获取视频流缓冲区
+            # if remote_uid not in self.video_streams:
+            #     self.video_streams[remote_uid] = []
+            # video_buffer = self.video_streams[remote_uid]
+            # # 限制缓冲区大小
+            # while len(video_buffer) >= self.max_buffer_size:
+            #     video_buffer.pop(0)
+            # # 加入当前帧到缓冲区
+            # video_buffer.append(frame)
             
-        # self.loop.call_soon_threadsafe(
-        #     self.emitter.emit, "video_frame", channel_id, remote_uid, frame
-        # )
+            # 发送采样帧事件
+            logger.info(f"Processing frame at {current_time:.3f}s, uid: {remote_uid}, frame_count: {self.frame_since_last_sample}, sampe_interval: {self.sample_interval}, video_fps: {self.detect_fps}, sample_rate: {self.sample_rate}")
+            self.loop.call_soon_threadsafe(
+                self.emitter.emit, "video_frame", channel_id, remote_uid, frame
+            )
+            self.frame_since_last_sample = 0
 
 
 class AudioStream:

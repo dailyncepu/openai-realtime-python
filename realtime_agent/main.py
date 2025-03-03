@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from realtime_agent.realtime.tools_example import AgentTools
 
-from .realtime.struct import PCM_CHANNELS, PCM_SAMPLE_RATE, ServerVADUpdateParams, Voices
+from .realtime.struct import PCM_CHANNELS, PCM_SAMPLE_RATE, ServerVADUpdateParams, Voices, VIDEO_SAMPLE_RATE
 
 from .agent import InferenceConfig, RealtimeKitAgent
 from .mp_rtc import RtcEngine, RtcOptions
@@ -80,7 +80,8 @@ def run_agent_in_process(
                 uid=uid,
                 sample_rate=PCM_SAMPLE_RATE,
                 channels=PCM_CHANNELS,
-                enable_pcm_dump= os.environ.get("WRITE_RTC_PCM", "false") == "true"
+                enable_pcm_dump= os.environ.get("WRITE_RTC_PCM", "false") == "true",
+                video_sample_rate=VIDEO_SAMPLE_RATE,
             ),
             inference_config=inference_config,
             tools=None,
