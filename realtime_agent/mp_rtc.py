@@ -60,13 +60,27 @@ class RtcOptions:
             appid, appcert, self.channel_name, self.uid
         )
 
+        
+class VideoStream:
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue = asyncio.Queue()
+
+    def __aiter__(self) -> AsyncIterator[VideoFrame]:
+        return self
+
+    async def __anext__(self) -> VideoFrame:
+        item = await self.queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
 
 class VideoFrameObserver(IVideoFrameObserver):
     def __init__(self, event_emitter: AsyncIOEventEmitter, options: RtcOptions) -> None:
         self.loop = asyncio.get_event_loop()
         self.emitter = event_emitter
         self.options = options
-        self.video_streams = {}
+        self.video_streams = dict[int, VideoStream]()
         # 帧率统计
         self.detect_fps = 0
         self.frame_count = 0
@@ -93,6 +107,8 @@ class VideoFrameObserver(IVideoFrameObserver):
         # 基于帧计数的均匀采样
         self.frame_since_last_sample += 1
         if self.frame_since_last_sample >= self.sample_interval: # 首次采样或达到采样间隔
+            logger.info(f"Processing frame at {current_time:.3f}s, uid: {remote_uid}, frame_count: {self.frame_since_last_sample}, sampe_interval: {self.sample_interval}, video_fps: {self.detect_fps}, sample_rate: {self.sample_rate}")
+            self.frame_since_last_sample = 0
             # # 初始化或获取视频流缓冲区
             # if remote_uid not in self.video_streams:
             #     self.video_streams[remote_uid] = []
@@ -102,13 +118,10 @@ class VideoFrameObserver(IVideoFrameObserver):
             #     video_buffer.pop(0)
             # # 加入当前帧到缓冲区
             # video_buffer.append(frame)
-            
             # 发送采样帧事件
-            logger.info(f"Processing frame at {current_time:.3f}s, uid: {remote_uid}, frame_count: {self.frame_since_last_sample}, sampe_interval: {self.sample_interval}, video_fps: {self.detect_fps}, sample_rate: {self.sample_rate}")
             self.loop.call_soon_threadsafe(
-                self.emitter.emit, "video_frame", channel_id, remote_uid, frame
+                self.video_streams[remote_uid].queue.put_nowait, frame
             )
-            self.frame_since_last_sample = 0
 
 
 class AudioStream:
@@ -122,7 +135,6 @@ class AudioStream:
         item = await self.queue.get()
         if item is None:
             raise StopAsyncIteration
-
         return item
 
 
@@ -328,11 +340,10 @@ class Channel:
             if user_id in self.audio_frame_observer.audio_streams:
                 audio_stream = self.audio_frame_observer.audio_streams.pop(user_id, None)
                 audio_stream.queue.put_nowait(None)
-        
-        self.on(
-            "user_left",
-            handle_user_left,
-        )
+            if user_id in self.video_frame_observer.video_streams:
+                video_stream = self.video_frame_observer.video_streams.pop(user_id, None)
+                video_stream.queue.put_nowait(None)
+        self.on("user_left", handle_user_left)
 
         def handle_audio_subscribe_state_changed(
             agora_local_user,
@@ -347,8 +358,23 @@ class Channel:
                     self.audio_frame_observer.audio_streams.update(
                         {user_id: AudioStream()}
                     )
-
         self.on("audio_subscribe_state_changed", handle_audio_subscribe_state_changed)
+
+        def handle_video_subscribe_state_changed(
+            agora_local_user,
+            channel,
+            user_id,
+            old_state,
+            new_state,
+            elapse_since_last_state,
+        ):
+            if new_state == 3:  # Successfully subscribed
+                if user_id not in self.video_frame_observer.video_streams:
+                    self.video_frame_observer.video_streams.update(
+                        {user_id: VideoStream()}
+                    )
+        self.on("video_subscribe_state_changed", handle_video_subscribe_state_changed)
+        
         self.on(
             "connection_state_changed",
             lambda agora_rtc_conn, conn_info, reason: setattr(
@@ -425,6 +451,14 @@ class Channel:
         self.on("connection_state_changed", callback)
         self.connection.disconnect()
         await disconnected_future
+
+    def get_video_frames(self, uid: int) -> VideoStream | None:
+        """
+        Returns the video frames from the channel.
+        Returns:
+            VideoStream: The video stream.
+        """
+        return None if self.video_frame_observer.video_streams.get(uid) is None else self.video_frame_observer.video_streams.get(uid)
 
     def get_audio_frames(self, uid: int) -> AudioStream | None:
         """

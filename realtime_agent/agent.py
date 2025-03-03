@@ -15,6 +15,7 @@ from .realtime.struct import ErrorMessage, FunctionCallOutputItemParam, InputAud
 from .realtime.connection import RealtimeApiConnection
 from .tools import ClientToolCallResponse, ToolContext
 from .utils import PCMWriter
+from agora.rtc.video_frame_observer import VideoFrame 
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -203,10 +204,8 @@ class RealtimeKitAgent:
 
             asyncio.create_task(self.rtc_to_model()).add_done_callback(log_exception)
             asyncio.create_task(self.model_to_rtc()).add_done_callback(log_exception)
-
-            asyncio.create_task(self._process_model_messages()).add_done_callback(
-                log_exception
-            )
+            asyncio.create_task(self._process_model_messages()).add_done_callback(log_exception)
+            asyncio.create_task(self.tmp_save_frame()).add_done_callback(log_exception)
 
             await disconnected_future
             logger.info("Agent finished running")
@@ -217,27 +216,12 @@ class RealtimeKitAgent:
             raise
 
     async def rtc_to_model(self) -> None:
-        """
-        从实时通信（RTC）通道中获取音频帧，并将其发送到模型进行处理。
-    
-        该函数会持续监听RTC通道中的音频帧，直到获取到有效的音频帧为止。然后，它会将音频帧发送到模型进行处理，
-        并可选地将音频数据写入PCM文件。
-    
-        参数:
-            无
-    
-        返回值:
-            无
-        """
         # 等待直到
         while self.subscribe_user is None or self.channel.get_audio_frames(self.subscribe_user) is None:
             await asyncio.sleep(0.1)
-
         audio_frames = self.channel.get_audio_frames(self.subscribe_user)
-
         # Initialize PCMWriter for receiving audio
         pcm_writer = PCMWriter(prefix="rtc_to_model", write_pcm=self.write_pcm)
-
         try:
             async for audio_frame in audio_frames:
                 # Process received audio (send to model)
@@ -254,20 +238,8 @@ class RealtimeKitAgent:
             raise  # Re-raise the exception to propagate cancellation
 
     async def model_to_rtc(self) -> None:
-        """
-        将模型生成的音频数据实时传输到RTC（实时通信）通道。
-
-        该函数从模型的音频队列中获取音频帧，并将其推送到RTC通道中。同时，如果启用了PCM写入功能，
-        还会将音频数据写入PCM文件。
-
-        参数:
-            self: 类的实例，包含音频队列、RTC通道和PCM写入器等必要组件。
-        返回值:
-            None: 该函数没有返回值。
-        """
         # Initialize PCMWriter for sending audio
         pcm_writer = PCMWriter(prefix="model_to_rtc", write_pcm=self.write_pcm)
-
         try:
             while True:
                 # Get audio frame from the model output
@@ -350,6 +322,7 @@ class RealtimeKitAgent:
                             message=to_json(message), msg_id=message.item_id
                         )
                     ))
+
                 #  InputAudioBufferCommitted
                 case InputAudioBufferCommitted():
                     pass
@@ -391,3 +364,67 @@ class RealtimeKitAgent:
 
                 case _:
                     logger.warning(f"Unhandled message {message=}")
+
+    async def tmp_save_frame(self):
+        while self.subscribe_user is None or self.channel.get_video_frames(self.subscribe_user) is None:
+            await asyncio.sleep(0.1)
+        video_frames = self.channel.get_video_frames(self.subscribe_user)
+        try:
+            async for video_frame in video_frames:
+                # Process received video frame 
+                logger.info(f"Received video frame with alpha_mode: {video_frame.alpha_mode}")
+                await yuv_to_rgb(video_frame, save_path=f"frame_{video_frame.render_time_ms}.png")
+                await asyncio.sleep(0)  # Yield control to allow other tasks to run
+        except asyncio.CancelledError:
+            raise
+
+async def yuv_to_rgb(frame: VideoFrame, save_path: str = None) -> bytes:
+    """
+    将YUV格式的VideoFrame转换为RGB格式，使用PIL处理
+    
+    参数:
+        frame: VideoFrame对象，包含YUV数据和相关参数
+        save_path: 保存图片的路径，如果为None则不保存
+        
+    返回:
+        RGB格式的字节数据
+    """
+    from PIL import Image
+    import numpy as np
+    
+    height, width = frame.height, frame.width
+    
+    # 转换YUV数据
+    Y = np.frombuffer(frame.y_buffer, dtype=np.uint8).reshape(height, frame.y_stride)[:, :width]
+    U = np.frombuffer(frame.u_buffer, dtype=np.uint8).reshape(height//2, frame.u_stride)[:, :width//2]
+    V = np.frombuffer(frame.v_buffer, dtype=np.uint8).reshape(height//2, frame.v_stride)[:, :width//2]
+    
+    # 上采样U和V分量
+    U = np.repeat(np.repeat(U, 2, axis=0), 2, axis=1)
+    V = np.repeat(np.repeat(V, 2, axis=1), 2, axis=0)
+    
+    # YUV到RGB的转换
+    Y = Y.astype(np.float32)
+    U = U.astype(np.float32) - 128
+    V = V.astype(np.float32) - 128
+    
+    R = Y + 1.402 * V
+    G = Y - 0.344136 * U - 0.714136 * V
+    B = Y + 1.772 * U
+    
+    # 裁剪值到0-255范围
+    RGB = np.clip(np.dstack([R, G, B]), 0, 255).astype(np.uint8)
+    
+    # 创建PIL图像
+    image = Image.fromarray(RGB, 'RGB')
+    
+    # 如果指定了保存路径，保存图片
+    if save_path:
+        try:
+            image.save(save_path, quality=95)
+            logger.info(f"Saved frame to {save_path}")
+        except Exception as e:
+            logger.error(f"Error saving frame to {save_path}: {e}")
+    
+    # 返回字节数据
+    return RGB.tobytes()
