@@ -4,7 +4,7 @@ import logging
 import os
 from builtins import anext
 from typing import Any
-
+import json
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
 
@@ -181,7 +181,7 @@ class RealtimeKitAgent:
             self.subscribe_user = await wait_for_remote_user(self.channel)
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
-            await self.channel.subscribe_video(self.subscribe_user)
+            #await self.channel.subscribe_video(self.subscribe_user)    ###需要video时 取消注释 slg
             logger.info(f"Subscribed to audio and video from user {self.subscribe_user}")
 
             async def on_user_left(
@@ -258,7 +258,16 @@ class RealtimeKitAgent:
 
     async def handle_funtion_call(self, message: ResponseFunctionCallArgumentsDone) -> None:
         function_call_response = await self.tools.execute_tool(message.name, message.arguments)
-        logger.info(f"Function call response: {function_call_response}")
+        #logger.info(f"Function call response: {function_call_response}")
+        ### 返回 function call 文本信息  
+        tmp_data = function_call_response.json_encoded_output
+        tmp_data = tmp_data.encode('utf-8').decode('unicode_escape')
+        inputdata = {"type":"function call", "transcript": tmp_data}
+        asyncio.create_task(self.channel.chat.send_message(
+            ChatMessage(
+                message=json.dumps(inputdata), msg_id=message.item_id
+            )))
+        
         await self.connection.send_request(
             ItemCreate(
                 item = FunctionCallOutputItemParam(
@@ -292,11 +301,12 @@ class RealtimeKitAgent:
                     logger.debug(f"TMS:ResponseAudioDelta: response_id:{message.response_id},item_id: {message.item_id}")
                 case ResponseAudioTranscriptDelta():
                     # logger.info(f"Received text message {message=}")
-                    asyncio.create_task(self.channel.chat.send_message(
-                        ChatMessage(
-                            message=to_json(message), msg_id=message.item_id
-                        )
-                    ))
+                    # asyncio.create_task(self.channel.chat.send_message(
+                    #     ChatMessage(
+                    #         message=to_json(message), msg_id=message.item_id
+                    #     )
+                    # ))
+                    pass
 
                 case ResponseAudioTranscriptDone():
                     logger.info(f"Text message done: {message=}")

@@ -176,3 +176,5 @@ crash_context_v*
 xdump*
 
 tmp/
+agora_cache.db 
+agoradns.dat 

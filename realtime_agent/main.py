@@ -84,8 +84,8 @@ def run_agent_in_process(
                 video_sample_rate=VIDEO_SAMPLE_RATE,
             ),
             inference_config=inference_config,
-            tools=None,
-            # tools=AgentTools() # tools example, replace with this line
+            # tools=None,
+            tools=AgentTools() # tools example, replace with this line
         )
     )
 
