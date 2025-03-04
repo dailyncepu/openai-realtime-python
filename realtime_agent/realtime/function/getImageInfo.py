@@ -3,13 +3,19 @@ import base64
 import requests
 import json
 import time
+import traceback
+import os
+from dotenv import load_dotenv
+
 
 #阿里
 #client = OpenAI(api_key = "",base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 #gpu05  deepseek-tiny
-
-client = OpenAI(api_key = "",base_url = "http://39.97.186.121:58084/v1")
+load_dotenv()
+api_key = os.getenv("TMP_API_KEY")
+print(api_key)
+client = OpenAI(api_key = api_key,base_url = "http://39.97.186.121:58084/v1")
 
 def image_to_base64(image_input):
     # 判断输入是 URL 还是文件路径
@@ -35,7 +41,6 @@ def getImageInfo(image_base64_list, img_prompt):
         for img_base64 in image_base64_list:
             ndict = {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
             contentList.append(ndict)
-        
         response = client.chat.completions.create(
             model="riskchat",
             messages=[
@@ -47,9 +52,9 @@ def getImageInfo(image_base64_list, img_prompt):
             top_p=1,
             stream=False,
         )
-
         return response.choices[0].message.content
     except:
+        traceback.print_exc()
         return "不知道图片中描述的信息。"
 
 if __name__=="__main__":
