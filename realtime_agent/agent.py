@@ -18,7 +18,7 @@ from .realtime.connection import RealtimeApiConnection
 from .tools import ClientToolCallResponse, ToolContext,LocalToolCallExecuted
 from .utils import PCMWriter, VFrameFormatConverter, VFrameSynchronizer
 
-from .utils import call_vllm_via_base64, image_to_base64
+from .utils import call_vllm_via_base64, image_bytes_to_base64, image_file_to_base64
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -160,7 +160,7 @@ class RealtimeKitAgent:
         self.write_pcm = os.environ.get("WRITE_AGENT_PCM", "false") == "true"
         logger.info(f"Write PCM: {self.write_pcm}")
 
-        self.vrame_synchronizer = VFrameSynchronizer(buffer_size=30, sync_trhreshold=500)
+        self.vrame_synchronizer = VFrameSynchronizer(buffer_size=60, sync_threshold=1000)
 
 
     async def run(self) -> None:
@@ -187,7 +187,7 @@ class RealtimeKitAgent:
             self.subscribe_user = await wait_for_remote_user(self.channel)
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
-            #await self.channel.subscribe_video(self.subscribe_user)    ###需要video时 取消注释 slg
+            await self.channel.subscribe_video(self.subscribe_user)
             logger.info(f"Subscribed to audio and video from user {self.subscribe_user}")
 
             async def on_user_left(
@@ -235,11 +235,11 @@ class RealtimeKitAgent:
                 await self.connection.send_audio_data(audio_frame.data)
 
                 # @tmp: 测试音视频同步
-                sync_video_frame = await self.vrame_synchronizer.find_matching_frame(audio_frame.timestamp)
-                if sync_video_frame:
-                    logger.info(f"[Check]Sync video frame ts: {sync_video_frame.timestamp}, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
-                else:
-                    logger.info(f"[Check]Can't Sync video frame, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
+                # sync_video_frame = await self.vrame_synchronizer.find_matching_frame(audio_frame.timestamp)
+                # if sync_video_frame:
+                #     logger.info(f"[Check]Sync video frame ts: {sync_video_frame.timestamp}, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
+                # else:
+                #     logger.info(f"[Check]Can't Sync video frame, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
 
                 # Write PCM data if enabled
                 await pcm_writer.write(audio_frame.data)
@@ -278,8 +278,10 @@ class RealtimeKitAgent:
             async for video_frame in video_frames:
                 # Process received video frame 
                 logger.info(f"Received video frame with alpha_mode: {video_frame.alpha_mode}")
-                vframe = await frame_converter.yuv420_to_rgb(video_frame, save_path=f"frame_{video_frame.render_time_ms}.png")
+                # vframe = await frame_converter.yuv420_to_rgb(video_frame, save_path=f"frame_{video_frame.render_time_ms}.png")
+                vframe = await frame_converter.yuv420_to_rgb(video_frame, save_path=None)
                 await self.vrame_synchronizer.add_video_frame(vframe)
+                logger.info(f"add vframe into buffer, ts: {vframe.timestamp}")
                 await asyncio.sleep(0)  # Yield control to allow other tasks to run
         except asyncio.CancelledError:
             raise
@@ -293,13 +295,16 @@ class RealtimeKitAgent:
             sync_video_frame = await self.vrame_synchronizer.find_matching_frame(curr_timestamp)
             if sync_video_frame:
                 logger.info(f"Sync video frame: {sync_video_frame.timestamp}, current timestamp: {curr_timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
-                imgbase64 = base64.b64encode(sync_video_frame.data).decode('utf-8')
-                # imgbase64 = image_to_base64("/home/work/slg/realtime/img/1.jpg")
+                imgbase64 = image_bytes_to_base64(sync_video_frame.data, curr_timestamp)
+                # imgbase64 = image_file_to_base64("/home/work/slg/realtime/img/1.jpg")
                 img_prompt = json.loads(message.arguments)["img_prompt"]
-                _, img_info = await call_vllm_via_base64("http://39.97.186.121:58084/v1/chat/completions", imgbase64,img_prompt)
+                _, img_info, ret_msg = await call_vllm_via_base64("http://39.97.186.121:58084/v1/chat/completions", imgbase64,img_prompt)
+                sync_vframe_ts = sync_video_frame.timestamp
             else:
                 img_info = "无法获取图片中描述的信息。"
-            logger.info(f"Function call response slg debug : {img_info}, sync_video_frame: {sync_video_frame}")
+                ret_msg = "无调用"
+                sync_vframe_ts = None
+            logger.info(f"Function call response slg debug : prompt:{img_prompt}, {img_info}, ret_msg:{ret_msg}, sync_video_frame: {sync_video_frame is not None}, vframe_ts:{sync_vframe_ts}, current_ts: {curr_timestamp}")
             function_call_response = LocalToolCallExecuted(json_encoded_output=json.dumps(img_info))
 
         ### 返回 function call 文本信息  

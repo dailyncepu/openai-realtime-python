@@ -7,6 +7,8 @@ import json
 import requests
 import base64
 import bisect
+import io
+import time
 import numpy as np
 from numpy.typing import NDArray
 from functools import lru_cache
@@ -119,7 +121,6 @@ class VFrameFormatConverter:
                 image.save(save_path, quality=95, optimize=True)
             except Exception as e:
                 print(f"Error saving frame to {save_path}: {e}")
-
         return vframe
 
 
@@ -195,7 +196,23 @@ class VFrameSynchronizer:
             return self.frame_index.get(closest_ts)
 
 
-def image_to_base64(image_input):
+def image_bytes_to_base64(image_bytes, curr_timestamp=None):
+    # 将图像数据转换为 PIL.Image 对象
+    from PIL import Image
+    image = Image.fromarray(np.frombuffer(image_bytes, dtype=np.uint8).reshape(640, 480, 3), 'RGB')
+    # 创建一个 BytesIO 对象来存储图像数据
+    buffered = io.BytesIO()
+    # 将图像保存到 BytesIO 对象中
+    image.save(buffered, format="JPEG")  # 你可以根据需要选择其他格式，如 "PNG"
+    # 获取图像的二进制数据
+    img_bytes = buffered.getvalue()
+    # 对二进制数据进行 Base64 编码
+    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+    image.save(f"frame_{curr_timestamp}_{time.time()*1000}.png", quality=95, optimize=True)
+    return img_base64
+
+
+def image_file_to_base64(image_input):
     # 判断输入是 URL 还是文件路径
     if image_input.startswith("http") or image_input.startswith("https"):
         # 从 URL 读取图片
@@ -234,15 +251,17 @@ async def call_vllm_via_base64(url,img_base64,prompt,max_token = 30, temperature
     }
 
     try :
-        desc_info = "不知道图片中描述的信息。"
+        desc_info, ret_msg = "不知道图片中描述的信息。", "success"
         return_info = requests.post(url, headers=headers, json=payload)
         if  return_info.status_code != 200:
-            return 100, desc_info
+            ret_msg = f"failed, status code is not 200, detail:{return_info}"
+            return 100, desc_info, ret_msg
         res = json.loads(return_info.text)
         desc_info = res["choices"][0]["message"]["content"]
-        return 200, desc_info
-    except:
-        return 100, desc_info
+        return 200, desc_info, ret_msg
+    except Exception as e:
+        ret_msg = str(e)
+        return 100, desc_info, ret_msg
 
 # if __name__=="__main__":
 #     imgpath = "/home/work/slg/realtime/img/1.jpg"
