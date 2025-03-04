@@ -11,6 +11,24 @@ class AgentTools(ToolContext):
         
         # create multiple functions here as per requirement
         self.register_function(
+            name = "getImageInfo",
+            # description="当用户的提问与图片信息相关时(如：发型，衣服，着装 等信息)，调用该函数获取图片信息(不需要用户输入图片)，函数输入只有图片的处理指令。",
+            description="当用户提问与图片信息相关时，调用该函数获取图片信息。如：询问当前样貌，当前场景等。",
+            parameters= {
+                "type": "object",
+                "properties": {
+                    "img_prompt": {
+                        "type": "string",
+                        "description": "对图片处理的指令",
+                    },
+                },
+                "required": ["img_prompt"],
+            },
+            ##函数
+            fn = self.getImageInfo
+        )
+
+        self.register_function(
             name = "getweather",
             description="查询某个城市的天气信息",
             parameters= {
@@ -53,24 +71,6 @@ class AgentTools(ToolContext):
             },
             ##函数
             fn = self.getEmotion
-        )
-
-
-        self.register_function(
-            name = "getImageInfo",
-            description="当用户的提问与图片信息相关时，调用该函数获取图片信息(不需要用户输入图片)，函数输入只有图片的处理指令。",
-            parameters= {
-                "type": "object",
-                "properties": {
-                    "img_prompt": {
-                        "type": "string",
-                        "description": "对图片处理的指令",
-                    },
-                },
-                "required": ["img_prompt"],
-            },
-            ##函数
-            fn = self.getImageInfo
         )
     async def getweather(self,city_code, n):
         

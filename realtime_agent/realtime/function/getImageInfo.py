@@ -35,27 +35,27 @@ def image_to_base64(image_input):
     base64_encoded = base64.b64encode(image_data).decode('utf-8')
     return base64_encoded
 def getImageInfo(image_base64_list, img_prompt):
-
-    contentList = [{"type": "text", "text": img_prompt}]
-    try:
-        for img_base64 in image_base64_list:
-            ndict = {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
-            contentList.append(ndict)
-        response = client.chat.completions.create(
-            model="riskchat",
-            messages=[
-                {'role': 'system', 'content': 'You are a helpful assistant.'},
-                {"role": "user", "content":contentList}
-            ],
-            max_tokens=30,
-            temperature=0.2,
-            top_p=1,
-            stream=False,
-        )
-        return response.choices[0].message.content
-    except:
-        traceback.print_exc()
-        return "不知道图片中描述的信息。"
+    return "不知道图片中描述的信息。"
+    # contentList = [{"type": "text", "text": img_prompt}]
+    # try:
+    #     for img_base64 in image_base64_list:
+    #         ndict = {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+    #         contentList.append(ndict)
+    #     response = client.chat.completions.create(
+    #         model="riskchat",
+    #         messages=[
+    #             {'role': 'system', 'content': 'You are a helpful assistant.'},
+    #             {"role": "user", "content":contentList}
+    #         ],
+    #         max_tokens=30,
+    #         temperature=0.2,
+    #         top_p=1,
+    #         stream=False,
+    #     )
+    #     return response.choices[0].message.content
+    # except:
+    #     traceback.print_exc()
+    #     return "不知道图片中描述的信息。"
 
 if __name__=="__main__":
     imgpath = "/home/work/slg/realtime/img/1.jpg"

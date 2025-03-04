@@ -7,15 +7,18 @@ from typing import Any
 import json
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
+import time
 
 from .mp_rtc import Channel, ChatMessage, RtcEngine, RtcOptions
 
 from .logger import setup_logger
 from .realtime.struct import ErrorMessage, FunctionCallOutputItemParam, InputAudioBufferCommitted, InputAudioBufferSpeechStarted, InputAudioBufferSpeechStopped, InputAudioTranscription, ItemCreate, ItemCreated, ItemInputAudioTranscriptionCompleted, RateLimitsUpdated, ResponseAudioDelta, ResponseAudioDone, ResponseAudioTranscriptDelta, ResponseAudioTranscriptDone, ResponseContentPartAdded, ResponseContentPartDone, ResponseCreate, ResponseCreated, ResponseDone, ResponseFunctionCallArgumentsDelta, ResponseFunctionCallArgumentsDone, ResponseOutputItemAdded, ResponseOutputItemDone, ServerVADUpdateParams, SessionUpdate, SessionUpdateParams, SessionUpdated, Voices, to_json
 from .realtime.connection import RealtimeApiConnection
-from .tools import ClientToolCallResponse, ToolContext
+from .tools import ClientToolCallResponse, ToolContext,LocalToolCallExecuted
 from .utils import PCMWriter
 from agora.rtc.video_frame_observer import VideoFrame 
+
+from .utils import call_vllm_via_base64, image_to_base64
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -258,7 +261,16 @@ class RealtimeKitAgent:
 
     async def handle_funtion_call(self, message: ResponseFunctionCallArgumentsDone) -> None:
         function_call_response = await self.tools.execute_tool(message.name, message.arguments)
-        #logger.info(f"Function call response: {function_call_response}")
+
+        if message.name =="getImageInfo":
+            imgbase64 = image_to_base64("/home/work/slg/realtime/img/1.jpg")
+            img_prompt = json.loads(message.arguments)["img_prompt"]
+            _, imgInfo = call_vllm_via_base64("http://39.97.186.121:58084/v1/chat/completions",imgbase64,img_prompt)
+            #function_call_response.json_encoded_output = imgInfo
+            logger.info(f"Function call response slg debug : {imgInfo}")
+            function_call_response = LocalToolCallExecuted(json_encoded_output=json.dumps(imgInfo))
+
+        logger.info(f"Function call response slg debug : {function_call_response}")
         ### 返回 function call 文本信息  
         tmp_data = function_call_response.json_encoded_output
         tmp_data = tmp_data.encode('utf-8').decode('unicode_escape')
@@ -295,8 +307,10 @@ class RealtimeKitAgent:
             # logger.info(f"Received message {message=}")
             match message:
                 case ResponseAudioDelta():
-                    # logger.info("Received audio message")
+                    # logger.info("Received slg debug:",type(base64.b64decode(message.delta)), base64.b64decode(message.delta))
                     self.audio_queue.put_nowait(base64.b64decode(message.delta))
+                    # string_bytes = "快乐<##>".encode('utf-8')
+                    # self.audio_queue.put_nowait(string_bytes + base64.b64decode(message.delta))
                     # loop.call_soon_threadsafe(self.audio_queue.put_nowait, base64.b64decode(message.delta))
                     logger.debug(f"TMS:ResponseAudioDelta: response_id:{message.response_id},item_id: {message.item_id}")
                 case ResponseAudioTranscriptDelta():
@@ -366,6 +380,7 @@ class RealtimeKitAgent:
                 case RateLimitsUpdated():
                     pass
                 case ResponseFunctionCallArgumentsDone():
+                    # time.sleep(60)
                     asyncio.create_task(
                         self.handle_funtion_call(message)
                     )

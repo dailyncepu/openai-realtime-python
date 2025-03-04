@@ -178,3 +178,5 @@ xdump*
 tmp/
 agora_cache.db 
 agoradns.dat 
+log.txt
+test.py 
