@@ -6,16 +6,19 @@ import time
 from builtins import anext
 from typing import Any
 from attr import dataclass
-
+import json
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
+import time
 
 from .mp_rtc import Channel, ChatMessage, RtcEngine, RtcOptions
 
 from .logger import setup_logger
 from .realtime.struct import ErrorMessage, FunctionCallOutputItemParam, InputAudioBufferCommitted, InputAudioBufferSpeechStarted, InputAudioBufferSpeechStopped, InputAudioTranscription, ItemCreate, ItemCreated, ItemInputAudioTranscriptionCompleted, RateLimitsUpdated, ResponseAudioDelta, ResponseAudioDone, ResponseAudioTranscriptDelta, ResponseAudioTranscriptDone, ResponseContentPartAdded, ResponseContentPartDone, ResponseCreate, ResponseCreated, ResponseDone, ResponseFunctionCallArgumentsDelta, ResponseFunctionCallArgumentsDone, ResponseOutputItemAdded, ResponseOutputItemDone, ServerVADUpdateParams, SessionUpdate, SessionUpdateParams, SessionUpdated, Voices, to_json
 from .realtime.connection import RealtimeApiConnection
-from .tools import ClientToolCallResponse, ToolContext
+from .tools import ClientToolCallResponse, ToolContext,LocalToolCallExecuted
 from .utils import PCMWriter, VFrameFormatConverter, VFrameSynchronizer
+
+from .utils import call_vllm_via_base64, image_to_base64
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -184,7 +187,7 @@ class RealtimeKitAgent:
             self.subscribe_user = await wait_for_remote_user(self.channel)
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
-            await self.channel.subscribe_video(self.subscribe_user)
+            #await self.channel.subscribe_video(self.subscribe_user)    ###需要video时 取消注释 slg
             logger.info(f"Subscribed to audio and video from user {self.subscribe_user}")
 
             async def on_user_left(
@@ -283,12 +286,31 @@ class RealtimeKitAgent:
 
     async def handle_funtion_call(self, message: ResponseFunctionCallArgumentsDone) -> None:
         function_call_response = await self.tools.execute_tool(message.name, message.arguments)
-        logger.info(f"Function call response: {function_call_response}")
-        curr_timestamp = int(time.time() * 1000) # 能够透传？
-        sync_video_frame = await self.vrame_synchronizer.find_matching_frame(curr_timestamp)
-        if sync_video_frame:
-            logger.info(f"Sync video frame: {sync_video_frame.timestamp}, current timestamp: {curr_timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
-            # TODO: 发送给VL模型
+        logger.info(f"Function call response slg debug : {function_call_response}")
+
+        if message.name =="getImageInfo":
+            curr_timestamp = int(time.time() * 1000) # 能够透传？
+            sync_video_frame = await self.vrame_synchronizer.find_matching_frame(curr_timestamp)
+            if sync_video_frame:
+                logger.info(f"Sync video frame: {sync_video_frame.timestamp}, current timestamp: {curr_timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
+                imgbase64 = base64.b64encode(sync_video_frame.data).decode('utf-8')
+                # imgbase64 = image_to_base64("/home/work/slg/realtime/img/1.jpg")
+                img_prompt = json.loads(message.arguments)["img_prompt"]
+                _, img_info = await call_vllm_via_base64("http://39.97.186.121:58084/v1/chat/completions", imgbase64,img_prompt)
+            else:
+                img_info = "无法获取图片中描述的信息。"
+            logger.info(f"Function call response slg debug : {img_info}, sync_video_frame: {sync_video_frame}")
+            function_call_response = LocalToolCallExecuted(json_encoded_output=json.dumps(img_info))
+
+        ### 返回 function call 文本信息  
+        tmp_data = function_call_response.json_encoded_output
+        tmp_data = tmp_data.encode('utf-8').decode('unicode_escape')
+        inputdata = {"type":"function call", "transcript": tmp_data}
+        asyncio.create_task(self.channel.chat.send_message(
+            ChatMessage(
+                message=json.dumps(inputdata), msg_id=message.item_id
+            )))
+        
         await self.connection.send_request(
             ItemCreate(
                 item = FunctionCallOutputItemParam(
@@ -316,17 +338,20 @@ class RealtimeKitAgent:
             # logger.info(f"Received message {message=}")
             match message:
                 case ResponseAudioDelta():
-                    # logger.info("Received audio message")
+                    # logger.info("Received slg debug:",type(base64.b64decode(message.delta)), base64.b64decode(message.delta))
                     self.audio_queue.put_nowait(base64.b64decode(message.delta))
+                    # string_bytes = "快乐<##>".encode('utf-8')
+                    # self.audio_queue.put_nowait(string_bytes + base64.b64decode(message.delta))
                     # loop.call_soon_threadsafe(self.audio_queue.put_nowait, base64.b64decode(message.delta))
                     logger.debug(f"TMS:ResponseAudioDelta: response_id:{message.response_id},item_id: {message.item_id}")
                 case ResponseAudioTranscriptDelta():
                     # logger.info(f"Received text message {message=}")
-                    asyncio.create_task(self.channel.chat.send_message(
-                        ChatMessage(
-                            message=to_json(message), msg_id=message.item_id
-                        )
-                    ))
+                    # asyncio.create_task(self.channel.chat.send_message(
+                    #     ChatMessage(
+                    #         message=to_json(message), msg_id=message.item_id
+                    #     )
+                    # ))
+                    pass
 
                 case ResponseAudioTranscriptDone():
                     logger.info(f"Text message done: {message=}")
@@ -386,6 +411,7 @@ class RealtimeKitAgent:
                 case RateLimitsUpdated():
                     pass
                 case ResponseFunctionCallArgumentsDone():
+                    # time.sleep(60)
                     asyncio.create_task(
                         self.handle_funtion_call(message)
                     )

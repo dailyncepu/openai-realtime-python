@@ -3,7 +3,13 @@ import functools
 from dataclasses import dataclass
 from datetime import datetime
 from collections import OrderedDict
+import json
+import requests
+import base64
+import bisect
 import numpy as np
+from numpy.typing import NDArray
+from functools import lru_cache
 from agora.rtc.video_frame_observer import VideoFrame
 
 
@@ -61,11 +67,6 @@ class VideoFrameData:
     data: bytearray = None
     timestamp: int = 0
 
-
-import bisect
-import numpy as np
-from numpy.typing import NDArray
-from functools import lru_cache
 
 class VFrameFormatConverter:
     def __init__(self):
@@ -192,3 +193,61 @@ class VFrameSynchronizer:
             )
 
             return self.frame_index.get(closest_ts)
+
+
+def image_to_base64(image_input):
+    # 判断输入是 URL 还是文件路径
+    if image_input.startswith("http") or image_input.startswith("https"):
+        # 从 URL 读取图片
+        response = requests.get(image_input)
+        if response.status_code == 200:
+            image_data = response.content
+        else:
+            raise ValueError(f"Failed to fetch image from URL: {image_input}")
+    else:
+        # 从文件路径读取图片
+        with open(image_input, "rb") as image_file:
+            image_data = image_file.read()
+
+    # 将图片数据转换为 Base64 编码
+    base64_encoded = base64.b64encode(image_data).decode('utf-8')
+    return base64_encoded
+
+
+async def call_vllm_via_base64(url,img_base64,prompt,max_token = 30, temperature = 0.3, top_p = 0.7):
+    api_key = ""
+    headers = {"Content-Type": "application/json","Authorization": f"Bearer {api_key}"}
+    contentList = [{"type": "text", "text": prompt}]
+    ndict = {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+    contentList.append(ndict)
+
+    payload ={
+        "model": "riskchat",
+        "messages": [
+                {'role': 'system', 'content': 'You are a helpful assistant.'},
+                {"role": "user", "content":contentList},
+                ],
+        "max_tokens": int(max_token),
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+        "stream": False,
+    }
+
+    try :
+        desc_info = "不知道图片中描述的信息。"
+        return_info = requests.post(url, headers=headers, json=payload)
+        if  return_info.status_code != 200:
+            return 100, desc_info
+        res = json.loads(return_info.text)
+        desc_info = res["choices"][0]["message"]["content"]
+        return 200, desc_info
+    except:
+        return 100, desc_info
+
+# if __name__=="__main__":
+#     imgpath = "/home/work/slg/realtime/img/1.jpg"
+#     imgprompt = "你看看我的发型咋样啊？"
+#     imgbase64 = image_to_base64(imgpath)
+#     res = call_vllm_via_base64("http://39.97.186.121:58084/v1/chat/completions",imgbase64,imgprompt,max_token = 30, temperature = 0.3, top_p = 0.7)
+#     print(res)
+

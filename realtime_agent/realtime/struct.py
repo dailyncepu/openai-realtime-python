@@ -25,6 +25,12 @@ class Voices(str, Enum):
     Onyx = "onyx"
     Shimmer = "shimmer"
 
+    Ash = "ash"
+    Ballad = "ballad"
+    Coral = "coral"
+    Verse = "verse"
+    Sage = "sage"
+
 class AudioFormats(str, Enum):
     PCM16 = "pcm16"
     G711_ULAW = "g711_ulaw"
