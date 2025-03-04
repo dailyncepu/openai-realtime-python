@@ -2,11 +2,12 @@ import asyncio
 import base64
 import logging
 import os
+import time
 from builtins import anext
 from typing import Any
+from attr import dataclass
 
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
-from attr import dataclass
 
 from .mp_rtc import Channel, ChatMessage, RtcEngine, RtcOptions
 
@@ -14,8 +15,7 @@ from .logger import setup_logger
 from .realtime.struct import ErrorMessage, FunctionCallOutputItemParam, InputAudioBufferCommitted, InputAudioBufferSpeechStarted, InputAudioBufferSpeechStopped, InputAudioTranscription, ItemCreate, ItemCreated, ItemInputAudioTranscriptionCompleted, RateLimitsUpdated, ResponseAudioDelta, ResponseAudioDone, ResponseAudioTranscriptDelta, ResponseAudioTranscriptDone, ResponseContentPartAdded, ResponseContentPartDone, ResponseCreate, ResponseCreated, ResponseDone, ResponseFunctionCallArgumentsDelta, ResponseFunctionCallArgumentsDone, ResponseOutputItemAdded, ResponseOutputItemDone, ServerVADUpdateParams, SessionUpdate, SessionUpdateParams, SessionUpdated, Voices, to_json
 from .realtime.connection import RealtimeApiConnection
 from .tools import ClientToolCallResponse, ToolContext
-from .utils import PCMWriter
-from agora.rtc.video_frame_observer import VideoFrame 
+from .utils import PCMWriter, VFrameFormatConverter, VFrameSynchronizer
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -157,6 +157,9 @@ class RealtimeKitAgent:
         self.write_pcm = os.environ.get("WRITE_AGENT_PCM", "false") == "true"
         logger.info(f"Write PCM: {self.write_pcm}")
 
+        self.vrame_synchronizer = VFrameSynchronizer(buffer_size=30, sync_trhreshold=500)
+
+
     async def run(self) -> None:
         """方法run是 的核心RealtimeKitAgent。它通过处理音频流、订阅远程用户以及处理传入和传出消息来管理代理的操作。此方法还确保正确的异常处理和正常关闭。
         以下是此方法的关键功能：
@@ -202,10 +205,10 @@ class RealtimeKitAgent:
                         disconnected_future.set_result(None)
             self.channel.on("connection_state_changed", callback)
 
+            asyncio.create_task(self.handle_video_frame()).add_done_callback(log_exception)
             asyncio.create_task(self.rtc_to_model()).add_done_callback(log_exception)
             asyncio.create_task(self.model_to_rtc()).add_done_callback(log_exception)
             asyncio.create_task(self._process_model_messages()).add_done_callback(log_exception)
-            asyncio.create_task(self.tmp_save_frame()).add_done_callback(log_exception)
 
             await disconnected_future
             logger.info("Agent finished running")
@@ -227,6 +230,13 @@ class RealtimeKitAgent:
                 # Process received audio (send to model)
                 _monitor_queue_size(self.audio_queue, "audio_queue")
                 await self.connection.send_audio_data(audio_frame.data)
+
+                # @tmp: 测试音视频同步
+                sync_video_frame = await self.vrame_synchronizer.find_matching_frame(audio_frame.timestamp)
+                if sync_video_frame:
+                    logger.info(f"[Check]Sync video frame ts: {sync_video_frame.timestamp}, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
+                else:
+                    logger.info(f"[Check]Can't Sync video frame, audio frame ts: {audio_frame.timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
 
                 # Write PCM data if enabled
                 await pcm_writer.write(audio_frame.data)
@@ -256,9 +266,29 @@ class RealtimeKitAgent:
             await pcm_writer.flush()
             raise  # Re-raise the cancelled exception to properly exit the task
 
+    async def handle_video_frame(self):
+        while self.subscribe_user is None or self.channel.get_video_frames(self.subscribe_user) is None:
+            await asyncio.sleep(0.1)
+        frame_converter = VFrameFormatConverter()
+        video_frames = self.channel.get_video_frames(self.subscribe_user)
+        try:
+            async for video_frame in video_frames:
+                # Process received video frame 
+                logger.info(f"Received video frame with alpha_mode: {video_frame.alpha_mode}")
+                vframe = await frame_converter.yuv420_to_rgb(video_frame, save_path=f"frame_{video_frame.render_time_ms}.png")
+                await self.vrame_synchronizer.add_video_frame(vframe)
+                await asyncio.sleep(0)  # Yield control to allow other tasks to run
+        except asyncio.CancelledError:
+            raise
+
     async def handle_funtion_call(self, message: ResponseFunctionCallArgumentsDone) -> None:
         function_call_response = await self.tools.execute_tool(message.name, message.arguments)
         logger.info(f"Function call response: {function_call_response}")
+        curr_timestamp = int(time.time() * 1000) # 能够透传？
+        sync_video_frame = await self.vrame_synchronizer.find_matching_frame(curr_timestamp)
+        if sync_video_frame:
+            logger.info(f"Sync video frame: {sync_video_frame.timestamp}, current timestamp: {curr_timestamp}, sync_threshold: {self.vrame_synchronizer.sync_threshold}")
+            # TODO: 发送给VL模型
         await self.connection.send_request(
             ItemCreate(
                 item = FunctionCallOutputItemParam(
@@ -365,66 +395,5 @@ class RealtimeKitAgent:
                 case _:
                     logger.warning(f"Unhandled message {message=}")
 
-    async def tmp_save_frame(self):
-        while self.subscribe_user is None or self.channel.get_video_frames(self.subscribe_user) is None:
-            await asyncio.sleep(0.1)
-        video_frames = self.channel.get_video_frames(self.subscribe_user)
-        try:
-            async for video_frame in video_frames:
-                # Process received video frame 
-                logger.info(f"Received video frame with alpha_mode: {video_frame.alpha_mode}")
-                await yuv_to_rgb(video_frame, save_path=f"frame_{video_frame.render_time_ms}.png")
-                await asyncio.sleep(0)  # Yield control to allow other tasks to run
-        except asyncio.CancelledError:
-            raise
 
-async def yuv_to_rgb(frame: VideoFrame, save_path: str = None) -> bytes:
-    """
-    将YUV格式的VideoFrame转换为RGB格式，使用PIL处理
-    
-    参数:
-        frame: VideoFrame对象，包含YUV数据和相关参数
-        save_path: 保存图片的路径，如果为None则不保存
-        
-    返回:
-        RGB格式的字节数据
-    """
-    from PIL import Image
-    import numpy as np
-    
-    height, width = frame.height, frame.width
-    
-    # 转换YUV数据
-    Y = np.frombuffer(frame.y_buffer, dtype=np.uint8).reshape(height, frame.y_stride)[:, :width]
-    U = np.frombuffer(frame.u_buffer, dtype=np.uint8).reshape(height//2, frame.u_stride)[:, :width//2]
-    V = np.frombuffer(frame.v_buffer, dtype=np.uint8).reshape(height//2, frame.v_stride)[:, :width//2]
-    
-    # 上采样U和V分量
-    U = np.repeat(np.repeat(U, 2, axis=0), 2, axis=1)
-    V = np.repeat(np.repeat(V, 2, axis=1), 2, axis=0)
-    
-    # YUV到RGB的转换
-    Y = Y.astype(np.float32)
-    U = U.astype(np.float32) - 128
-    V = V.astype(np.float32) - 128
-    
-    R = Y + 1.402 * V
-    G = Y - 0.344136 * U - 0.714136 * V
-    B = Y + 1.772 * U
-    
-    # 裁剪值到0-255范围
-    RGB = np.clip(np.dstack([R, G, B]), 0, 255).astype(np.uint8)
-    
-    # 创建PIL图像
-    image = Image.fromarray(RGB, 'RGB')
-    
-    # 如果指定了保存路径，保存图片
-    if save_path:
-        try:
-            image.save(save_path, quality=95)
-            logger.info(f"Saved frame to {save_path}")
-        except Exception as e:
-            logger.error(f"Error saving frame to {save_path}: {e}")
-    
-    # 返回字节数据
-    return RGB.tobytes()
+ 

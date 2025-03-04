@@ -154,6 +154,7 @@ class AudioFrameObserver(IAudioFrameObserver):
         audio_frame.number_of_channels = frame.channels
         audio_frame.sample_rate = self.options.sample_rate
         audio_frame.data = frame.buffer
+        audio_frame.timestamp = frame.render_time_ms
 
         # print(
         #     "on_playback_audio_frame_before_mixing",

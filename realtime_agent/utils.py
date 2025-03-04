@@ -1,6 +1,10 @@
 import asyncio
 import functools
+from dataclasses import dataclass
 from datetime import datetime
+from collections import OrderedDict
+import numpy as np
+from agora.rtc.video_frame_observer import VideoFrame
 
 
 def write_pcm_to_file(buffer: bytearray, file_name: str) -> None:
@@ -47,3 +51,144 @@ class PCMWriter:
                 functools.partial(write_pcm_to_file, self.buffer[:], self.file_name),
             )
         self.buffer.clear()
+
+
+@dataclass(kw_only=True)
+class VideoFrameData:
+    type: str = "rgb"
+    width: int = 0
+    height: int = 0
+    data: bytearray = None
+    timestamp: int = 0
+
+
+import bisect
+import numpy as np
+from numpy.typing import NDArray
+from functools import lru_cache
+
+class VFrameFormatConverter:
+    def __init__(self):
+        # 预计算 YUV 到 RGB 的转换矩阵
+        self.yuv2rgb_matrix = np.array([
+            [1.0, 0.0, 1.402],
+            [1.0, -0.344136, -0.714136],
+            [1.0, 1.772, 0.0]
+        ])
+
+    @lru_cache(maxsize=8)
+    def _create_conversion_matrices(self, height: int, width: int) -> tuple[NDArray, NDArray, NDArray]:
+        """缓存转换矩阵以提高性能"""
+        y_matrix = np.zeros((height, width), dtype=np.float32)
+        u_matrix = np.zeros((height, width), dtype=np.float32)
+        v_matrix = np.zeros((height, width), dtype=np.float32)
+        return y_matrix, u_matrix, v_matrix
+
+    async def yuv420_to_rgb(self, frame: VideoFrame, save_path: str = None) -> VideoFrameData:
+        height, width = frame.height, frame.width
+        
+        # 使用预分配的矩阵
+        y_matrix, u_matrix, v_matrix = self._create_conversion_matrices(height, width)
+        
+        # 优化 YUV 数据处理
+        y_matrix = np.frombuffer(frame.y_buffer, dtype=np.uint8).reshape(height, frame.y_stride)[:, :width]
+        u_temp = np.frombuffer(frame.u_buffer, dtype=np.uint8).reshape(height//2, frame.u_stride)[:, :width//2]
+        v_temp = np.frombuffer(frame.v_buffer, dtype=np.uint8).reshape(height//2, frame.v_stride)[:, :width//2]
+
+        # 使用向量化操作进行上采样
+        u_matrix = np.kron(u_temp - 128, np.ones((2, 2), dtype=np.float32))
+        v_matrix = np.kron(v_temp - 128, np.ones((2, 2), dtype=np.float32))
+        
+        # 向量化 YUV 到 RGB 的转换
+        yuv = np.stack([y_matrix, u_matrix, v_matrix], axis=-1)
+        rgb = np.clip(np.dot(yuv, self.yuv2rgb_matrix.T), 0, 255).astype(np.uint8)
+
+        vframe = VideoFrameData(
+            type="rgb",
+            width=width,
+            height=height,
+            data=rgb.tobytes(),
+            timestamp=frame.render_time_ms
+        )
+
+        if save_path:
+            from PIL import Image
+            image = Image.fromarray(rgb, 'RGB')
+            try:
+                image.save(save_path, quality=95, optimize=True)
+            except Exception as e:
+                print(f"Error saving frame to {save_path}: {e}")
+
+        return vframe
+
+
+class VFrameSynchronizer:
+    def __init__(self, buffer_size=30, sync_threshold=100, cleanup_interval=1000):
+        self.buffer_size = buffer_size
+        self.sync_threshold = sync_threshold
+        self.cleanup_interval = cleanup_interval
+        self.frame_index = OrderedDict()
+        self.last_cleanup_time = 0
+        self.lock = asyncio.Lock()
+        self._sorted_timestamps = []
+        self._needs_sort = False
+
+    async def _cleanup_expired_frames(self, current_time: int) -> None:
+        if current_time - self.last_cleanup_time < self.cleanup_interval:
+            return
+
+        expiration_time = current_time - (2 * self.sync_threshold)
+        
+        # 使用二分查找找到过期帧的位置
+        if self._needs_sort:
+            self._sorted_timestamps = sorted(self.frame_index.keys())
+            self._needs_sort = False
+            
+        idx = bisect.bisect_right(self._sorted_timestamps, expiration_time)
+        if idx > 0:
+            expired_ts = self._sorted_timestamps[:idx]
+            for ts in expired_ts:
+                del self.frame_index[ts]
+            self._sorted_timestamps = self._sorted_timestamps[idx:]
+        
+        self.last_cleanup_time = current_time
+
+    async def add_video_frame(self, video_frame: VideoFrameData):
+        async with self.lock:
+            current_time = video_frame.timestamp
+            await self._cleanup_expired_frames(current_time)
+            
+            self.frame_index[current_time] = video_frame
+            self._needs_sort = True
+            
+            if len(self.frame_index) > self.buffer_size:
+                self.frame_index.popitem(last=False)
+                self._needs_sort = True
+
+    async def find_matching_frame(self, target_time: int) -> VideoFrameData | None:
+        async with self.lock:
+            if not self.frame_index:
+                return None
+
+            if self._needs_sort:
+                self._sorted_timestamps = sorted(self.frame_index.keys())
+                self._needs_sort = False
+
+            window_start = target_time - self.sync_threshold
+            window_end = target_time + self.sync_threshold
+
+            # 使用二分查找确定时间窗口范围
+            left_idx = bisect.bisect_left(self._sorted_timestamps, window_start)
+            right_idx = bisect.bisect_right(self._sorted_timestamps, window_end)
+
+            if left_idx >= len(self._sorted_timestamps):
+                return None
+
+            # 在窗口范围内找到最接近的帧
+            closest_ts = min(
+                self._sorted_timestamps[left_idx:right_idx],
+                key=lambda x: abs(x - target_time),
+                default=None
+            )
+
+            return self.frame_index.get(closest_ts)
