@@ -10,6 +10,7 @@ import bisect
 import io
 import time
 import numpy as np
+from PIL import Image
 from numpy.typing import NDArray
 from functools import lru_cache
 from agora.rtc.video_frame_observer import VideoFrame
@@ -67,6 +68,7 @@ class VideoFrameData:
     width: int = 0
     height: int = 0
     data: bytearray = None
+    base64_str: str = None
     timestamp: int = 0
 
 
@@ -87,7 +89,7 @@ class VFrameFormatConverter:
         v_matrix = np.zeros((height, width), dtype=np.float32)
         return y_matrix, u_matrix, v_matrix
 
-    async def yuv420_to_rgb(self, frame: VideoFrame, save_path: str = None) -> VideoFrameData:
+    async def yuv420_to_rgb_v2(self, frame: VideoFrame, save_path: str = None) -> VideoFrameData: # TODO: 颜色模式问题定位
         height, width = frame.height, frame.width
         
         # 使用预分配的矩阵
@@ -105,18 +107,67 @@ class VFrameFormatConverter:
         # 向量化 YUV 到 RGB 的转换
         yuv = np.stack([y_matrix, u_matrix, v_matrix], axis=-1)
         rgb = np.clip(np.dot(yuv, self.yuv2rgb_matrix.T), 0, 255).astype(np.uint8)
+        image = Image.fromarray(rgb, 'RGB')
 
         vframe = VideoFrameData(
             type="rgb",
             width=width,
             height=height,
-            data=rgb.tobytes(),
+            base64_str=image_pil_to_base64(image),
             timestamp=frame.render_time_ms
         )
 
         if save_path:
-            from PIL import Image
-            image = Image.fromarray(rgb, 'RGB')
+            try:
+                image.save(save_path, quality=95, optimize=True)
+            except Exception as e:
+                print(f"Error saving frame to {save_path}: {e}")
+        return vframe
+
+    async def yuv420_to_rgb(self, frame: VideoFrame, save_path: str = None) -> VideoFrameData: # TODO: 性能测试
+        """
+        将YUV格式的VideoFrame转换为RGB格式，使用PIL处理
+
+        参数:
+            frame: VideoFrame对象，包含YUV数据和相关参数
+            save_path: 保存图片的路径，如果为None则不保存
+
+        返回:
+            RGB格式的字节数据
+        """
+        height, width = frame.height, frame.width
+
+        # 转换YUV数据
+        Y = np.frombuffer(frame.y_buffer, dtype=np.uint8).reshape(height, frame.y_stride)[:, :width]
+        U = np.frombuffer(frame.u_buffer, dtype=np.uint8).reshape(height//2, frame.u_stride)[:, :width//2]
+        V = np.frombuffer(frame.v_buffer, dtype=np.uint8).reshape(height//2, frame.v_stride)[:, :width//2]
+
+        # 上采样U和V分量
+        U = np.repeat(np.repeat(U, 2, axis=0), 2, axis=1)
+        V = np.repeat(np.repeat(V, 2, axis=1), 2, axis=0)
+
+        # YUV到RGB的转换
+        Y = Y.astype(np.float32)
+        U = U.astype(np.float32) - 128
+        V = V.astype(np.float32) - 128
+
+        R = Y + 1.402 * V
+        G = Y - 0.344136 * U - 0.714136 * V
+        B = Y + 1.772 * U
+
+        # 裁剪值到0-255范围
+        RGB = np.clip(np.dstack([R, G, B]), 0, 255).astype(np.uint8)
+        image = Image.fromarray(RGB, 'RGB')
+
+        vframe = VideoFrameData(
+            type="rgb",
+            width=width,
+            height=height,
+            base64_str=image_pil_to_base64(image),
+            timestamp=frame.render_time_ms
+        )
+
+        if save_path:
             try:
                 image.save(save_path, quality=95, optimize=True)
             except Exception as e:
@@ -196,9 +247,8 @@ class VFrameSynchronizer:
             return self.frame_index.get(closest_ts)
 
 
-def image_bytes_to_base64(image_bytes, curr_timestamp=None):
+def image_bytes_to_base64(image_bytes, file_prefix=None):
     # 将图像数据转换为 PIL.Image 对象
-    from PIL import Image
     image = Image.fromarray(np.frombuffer(image_bytes, dtype=np.uint8).reshape(640, 480, 3), 'RGB')
     # 创建一个 BytesIO 对象来存储图像数据
     buffered = io.BytesIO()
@@ -208,8 +258,44 @@ def image_bytes_to_base64(image_bytes, curr_timestamp=None):
     img_bytes = buffered.getvalue()
     # 对二进制数据进行 Base64 编码
     img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-    image.save(f"frame_{curr_timestamp}_{time.time()*1000}.png", quality=95, optimize=True)
+    if file_prefix:
+        image.save(f"frame_{file_prefix}_{time.time()*1000}.png", quality=95, optimize=True)
     return img_base64
+
+def image_pil_to_base64(image, file_prefix=None):
+    """
+    将PIL的Image对象转换为Base64编码的字符串。
+    
+    参数:
+        image (PIL.Image): PIL的Image对象。
+    
+    返回:
+        str: Base64编码的字符串。
+    """
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG")  # 保存为PNG格式
+    img_bytes = buffered.getvalue()
+    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+    if file_prefix:
+        image.save(f"frame_{file_prefix}_{time.time()*1000}.png", quality=95)
+    return img_base64
+
+def base64_to_pil_image(base64_str, file_prefix=None):
+    """
+    将Base64编码的字符串转换为PIL的Image对象。
+    
+    参数:
+        base64_str (str): Base64编码的字符串。
+    
+    返回:
+        PIL.Image: PIL的Image对象。
+    """
+    img_bytes = base64.b64decode(base64_str)
+    buffered = io.BytesIO(img_bytes)
+    image = Image.open(buffered)
+    if file_prefix:
+        image.save(f"frame_{file_prefix}_{time.time()*1000}.png", quality=95, optimize=True)
+    return image
 
 
 def image_file_to_base64(image_input):

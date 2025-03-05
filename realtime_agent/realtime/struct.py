@@ -7,7 +7,7 @@ import uuid
 
 PCM_SAMPLE_RATE = 24000
 PCM_CHANNELS = 1
-VIDEO_SAMPLE_RATE = 4
+VIDEO_SAMPLE_RATE = 10
 
 def generate_event_id() -> str:
     return str(uuid.uuid4())

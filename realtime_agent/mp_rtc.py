@@ -86,7 +86,7 @@ class VideoFrameObserver(IVideoFrameObserver):
         self.frame_count = 0
         self.last_frame_time = 0
         # 采样配置
-        self.sample_rate = options.video_sample_rate if hasattr(options, 'video_sample_rate') else 1 # 每个流每秒采样张数, 默认每秒采样一帧
+        self.sample_rate = options.video_sample_rate if hasattr(options, 'video_sample_rate') else 10 # 每个流每秒采样张数, 默认每秒采样10帧
         self.sample_interval = 0 # 采样间隔
         self.max_buffer_size = options.max_buffer_size if hasattr(options, 'max_buffer_size') else 30  # 每个流的最大缓冲帧数
         self.frame_since_last_sample = 0 # 自上次采样以来经过了多少帧
@@ -107,7 +107,7 @@ class VideoFrameObserver(IVideoFrameObserver):
         # 基于帧计数的均匀采样
         self.frame_since_last_sample += 1
         if self.frame_since_last_sample >= self.sample_interval: # 首次采样或达到采样间隔
-            logger.info(f"Processing frame at {current_time:.3f}s, uid: {remote_uid}, frame_count: {self.frame_since_last_sample}, sampe_interval: {self.sample_interval}, video_fps: {self.detect_fps}, sample_rate: {self.sample_rate}")
+            # logger.info(f"Processing frame at {current_time:.3f}s, uid: {remote_uid}, frame_count: {self.frame_since_last_sample}, sampe_interval: {self.sample_interval}, video_fps: {self.detect_fps}, sample_rate: {self.sample_rate}")
             self.frame_since_last_sample = 0
             # # 初始化或获取视频流缓冲区
             # if remote_uid not in self.video_streams:
