@@ -18,7 +18,7 @@ from .realtime.connection import RealtimeApiConnection
 from .tools import ClientToolCallResponse, ToolContext,LocalToolCallExecuted
 from .utils import PCMWriter, VFrameFormatConverter, VFrameSynchronizer
 
-from .utils import call_vllm_via_base64, base64_to_pil_image
+from .utils import call_vllm_via_base64, base64_to_pil_image, get_current_time_ms
 
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
@@ -288,7 +288,6 @@ class RealtimeKitAgent:
 
     async def handle_funtion_call(self, message: ResponseFunctionCallArgumentsDone) -> None:
         function_call_response = await self.tools.execute_tool(message.name, message.arguments)
-        logger.info(f"Function call response slg debug : {function_call_response}")
 
         if message.name =="getImageInfo":
             curr_timestamp = int(time.time() * 1000) # 能够透传？+ function_call的耗时
@@ -344,12 +343,8 @@ class RealtimeKitAgent:
             # logger.info(f"Received message {message=}")
             match message:
                 case ResponseAudioDelta():
-                    # logger.info("Received slg debug:",type(base64.b64decode(message.delta)), base64.b64decode(message.delta))
                     self.audio_queue.put_nowait(base64.b64decode(message.delta))
-                    # string_bytes = "快乐<##>".encode('utf-8')
-                    # self.audio_queue.put_nowait(string_bytes + base64.b64decode(message.delta))
-                    # loop.call_soon_threadsafe(self.audio_queue.put_nowait, base64.b64decode(message.delta))
-                    logger.debug(f"TMS:ResponseAudioDelta: response_id:{message.response_id},item_id: {message.item_id}")
+                    logger.info(f"6.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, event_id: {message.event_id}, class:{message.__class__}")
                 case ResponseAudioTranscriptDelta():
                     # logger.info(f"Received text message {message=}")
                     # asyncio.create_task(self.channel.chat.send_message(
@@ -360,7 +355,7 @@ class RealtimeKitAgent:
                     pass
 
                 case ResponseAudioTranscriptDone():
-                    logger.info(f"Text message done: {message=}")
+                    # logger.info(f"Text message done: {message=}")
                     asyncio.create_task(self.channel.chat.send_message(
                         ChatMessage(
                             message=to_json(message), msg_id=message.item_id
@@ -372,12 +367,12 @@ class RealtimeKitAgent:
                     # clear the audio queue so audio stops playing
                     while not self.audio_queue.empty():
                         self.audio_queue.get_nowait()
-                    logger.info(f"TMS:InputAudioBufferSpeechStarted: item_id: {message.item_id}")
+                    logger.info(f"1.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, class:{message.__class__}")
                 case InputAudioBufferSpeechStopped():
-                    logger.info(f"TMS:InputAudioBufferSpeechStopped: item_id: {message.item_id}")
+                    logger.info(f"2.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, event_id: {message.event_id}, class:{message.__class__}")
                     pass
                 case ItemInputAudioTranscriptionCompleted():
-                    logger.info(f"ItemInputAudioTranscriptionCompleted: {message=}")
+                    logger.info(f"?.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, event_id: {message.event_id}, class:{message.__class__}") 
                     asyncio.create_task(self.channel.chat.send_message(
                         ChatMessage(
                             message=to_json(message), msg_id=message.item_id
@@ -386,14 +381,18 @@ class RealtimeKitAgent:
 
                 #  InputAudioBufferCommitted
                 case InputAudioBufferCommitted():
+                    logger.info(f"3.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, previous_item_id: {message.previous_item_id}, class:{message.__class__}")
                     pass
                 case ItemCreated():
+                    logger.info(f"4.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item['id']}, previous_item_id: {message.previous_item_id}, class:{message.__class__}")
                     pass
                 # ResponseCreated
                 case ResponseCreated():
+                    logger.info(f"5.TMS@{get_current_time_ms()}:{message.type}: resp_id:{message.response.id}, event_id:{message.event_id}")
                     pass
                 # ResponseDone
                 case ResponseDone():
+                    logger.info(f"8.TMS@{get_current_time_ms()}:{message.type}: resp_id:{message.response.id}, event_id:{message.event_id}")
                     pass
 
                 # ResponseOutputItemAdded
@@ -405,6 +404,7 @@ class RealtimeKitAgent:
                     pass
                 # ResponseAudioDone
                 case ResponseAudioDone():
+                    logger.info(f"7.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, resp_id:{message.response_id}, event_id: {message.event_id}, class:{message.__class__}")
                     pass
                 # ResponseContentPartDone
                 case ResponseContentPartDone():
@@ -417,10 +417,10 @@ class RealtimeKitAgent:
                 case RateLimitsUpdated():
                     pass
                 case ResponseFunctionCallArgumentsDone():
-                    # time.sleep(60)
                     asyncio.create_task(
                         self.handle_funtion_call(message)
                     )
+                    logger.info(f"?.TMS@{get_current_time_ms()}:{message.type}: item_id:{message.item_id}, response_id: {message.response_id}, call_id: {message.call_id}, name: {message.name}, class:{message.__class__}") 
                 case ResponseFunctionCallArgumentsDelta():
                     pass
 

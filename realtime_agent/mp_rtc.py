@@ -98,7 +98,7 @@ class VideoFrameObserver(IVideoFrameObserver):
         # 帧率统计
         self.frame_count += 1
         if current_time - self.last_frame_time >= 1:
-            logger.info(f"Video FPS: {self.frame_count}, Resolution: {frame.width}x{frame.height}")
+            # logger.info(f"Video FPS: {self.frame_count}, Resolution: {frame.width}x{frame.height}")
             self.detect_fps = self.frame_count
             self.sample_interval = int(self.detect_fps / self.sample_rate) # 计算采样间隔
             self.frame_count = 0

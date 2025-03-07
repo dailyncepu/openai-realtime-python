@@ -9,11 +9,20 @@ import base64
 import bisect
 import io
 import time
+from datetime import datetime
 import numpy as np
 from PIL import Image
 from numpy.typing import NDArray
 from functools import lru_cache
 from agora.rtc.video_frame_observer import VideoFrame
+
+
+def get_current_time_ms():
+    current_time = datetime.now()
+    formatted_time = current_time.strftime('%Y-%m-%d %H:%M:%S.%f')
+    # 只保留到毫秒（3位小数）
+    formatted_time = formatted_time[:-3]
+    return formatted_time
 
 
 def write_pcm_to_file(buffer: bytearray, file_name: str) -> None:
